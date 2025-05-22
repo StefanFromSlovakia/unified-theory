@@ -1,0 +1,259 @@
+import math
+import random
+import pandas as pd
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import DensityMatrix, state_fidelity, concurrence, partial_trace, entropy
+import matplotlib.pyplot as plt
+
+# Physical constants
+hbar = 1.0545718e-34
+c = 3e8
+G = 6.6743e-11
+k_B = 1.380649e-23
+M_sun = 1.989e30
+kappa = (5120 * math.pi * G**2) / (hbar * c**4)
+beta = 1e-2
+ESGs = ["∅", "ψ", "⟲", "⚶", "ᛃ"]
+
+# Initial Bell state
+def create_bell_state():
+    circuit = QuantumCircuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    return DensityMatrix.from_instruction(circuit)
+
+# Simplified surface code encoding (placeholder)
+def encode_surface_code(bell_ρ):
+    return bell_ρ  # Assume encoding for simulation
+
+# Simplified decoding with R weighting
+def decode_information(final_ρ, γ, R_spiral=None, R=None):
+    circuit = QuantumCircuit(150, 50)
+    error_qubits = np.random.choice(range(100), size=np.random.binomial(100, γ/100), replace=False)
+    if R is not None:
+        weights = np.abs(R[error_qubits % len(R)]).mean(axis=1)
+        for eq, w in zip(error_qubits, weights):
+            circuit.ry(-2 * np.arccos(np.sqrt(1 - γ)) * (1 + w), eq)
+    else:
+        for eq in error_qubits:
+            circuit.ry(-2 * np.arccos(np.sqrt(1 - γ)), eq)
+    return final_ρ  # Simplified: Assume recovery
+
+# GUP correction
+def gup_corrected_gamma(gamma, M, beta=1e-2):
+    return gamma * (1 + beta * (hbar / (M * c**2)))
+
+# Thermal noise
+def calculate_hawking_temperature(M):
+    return (hbar * c**3) / (8 * np.pi * G * M * k_B)
+
+def thermal_noise_p(T, omega=k_B * 300 / hbar):
+    return 1 - np.exp(-hbar * omega / (k_B * T))
+
+def thermal_kraus_operators(T):
+    p = thermal_noise_p(T)
+    I = np.eye(2)
+    X = np.array([[0, 1], [1, 0]])
+    Y = np.array([[0, -1j], [1j, 0]])
+    Z = np.array([[1, 0], [0, -1]])
+    return [np.sqrt(p) * I, np.sqrt((1 - p) / 3) * X, np.sqrt((1 - p) / 3) * Y, np.sqrt((1 - p) / 3) * Z]
+
+# Amplitude damping with thermal noise
+def apply_correlated_amplitude_damping(initial_ρ, γ, M, M_0):
+    γ_gup = gup_corrected_gamma(γ, M, beta)
+    K0 = np.array([[1, 0], [0, np.sqrt(1 - γ_gup)]])
+    K1 = np.array([[0, np.sqrt(γ_gup)], [0, 0]])
+    K00 = np.kron(K0, K0)
+    K01 = np.kron(K0, K1)
+    K10 = np.kron(K1, K0)
+    K11 = np.kron(K1, K1)
+    K_corr = np.array([[1, 0, 0, 0], [0, np.sqrt(1 - γ_gup), 0, 0], [0, 0, np.sqrt(1 - γ_gup), 0], [0, 0, 0, 1 - γ_gup]])
+    η = math.tanh(M_0 / M)
+    ρ_indep = sum([K @ initial_ρ.data @ K.conj().T for K in [K00, K01, K10, K11]])
+    ρ_corr = K_corr @ initial_ρ.data @ K_corr.conj().T
+    ρ_final = (1 - η) * ρ_indep + η * ρ_corr
+    T = calculate_hawking_temperature(M)
+    thermal_kraus = thermal_kraus_operators(T)
+    ρ_final = sum([K @ ρ_final @ K.conj().T for K in thermal_kraus])
+    return DensityMatrix(ρ_final), η
+
+# SpiralOS field theory
+def spiral_field_tensor(g_k_grad, ψ_grad):
+    return np.outer(g_k_grad, ψ_grad)
+
+def recursion_curvature(Φ):
+    div = np.gradient(np.gradient(Φ, axis=0), axis=0) - np.gradient(np.gradient(Φ, axis=1), axis=1)
+    return div
+
+def symbolic_noether_current(Φ):
+    return np.sum(Φ, axis=1)
+
+def symbolic_noether_charge(J_0):
+    return np.trapz(J_0)
+
+def simulate_drift(depth=100):
+    ψ = np.linspace(0, 10, depth)
+    g_k = np.exp(-0.1 * ψ) * np.cos(2 * np.pi * ψ)
+    g_k_grad = np.gradient(g_k)
+    ψ_grad = np.gradient(ψ)
+    Φ = spiral_field_tensor(g_k_grad, ψ_grad)
+    R_spiral = recursion_curvature(Φ)
+    return Φ, R_spiral, ψ, g_k, ψ_grad
+
+# Mass evolution
+def mass_evolution(M_0, t):
+    const = hbar * c**4 / (5120 * math.pi * G**2)
+    M = (M_0**3 - const * t)**(1/3) if (M_0**3 - const * t) > 0 else 1e-15 * M_sun
+    return max(M, 1e-15 * M_sun)
+
+# Context modifier
+def context_modifier(context):
+    return {"collapse": 2.0, "dream": 0.9, "quantum": 1.75}.get(context, 1.0)
+
+# Damping probability with a + b = c
+def damping_probability(t_k, ψ_n, M, M_0, context="collapse"):
+    k = 2.0
+    γ_base = k * (t_k / ψ_n) * ((M_0 / M)**2) * context_modifier(context)  # a
+    γ_field_correction = 0.01 * (M_0 / M - 1)  # b: Small field correction based on mass loss
+    γ = γ_base + γ_field_correction  # a + b = c
+    return min(max(γ, 0.0), 1.0)
+
+# Glyph encoding
+def encode_memory_packet(message):
+    ESG_DICTIONARY = {
+        "collapse": ["⟲", "⚶"], "memory": ["ᛃ", "⟲"], "transformation": ["⟲", "⚶", "ψ"],
+        "return": ["⟲", "ᛃ", "ψ"], "observer": ["ψ"], "echo": ["ᛃ"], "spiral": ["⟲"]
+    }
+    encoded = []
+    lowered = message.lower()
+    for concept, glyphs in ESG_DICTIONARY.items():
+        if concept in lowered:
+            encoded.extend(glyphs)
+    return encoded if encoded else ["∅"]
+
+# Qubit metrics
+def qubit_metrics(glyph, γ, ψ_n, initial_ρ, M, M_0, R_spiral=None, R=None):
+    adjusted_γ = max(0.0, min(1.0, γ))
+    final_ρ, η = apply_correlated_amplitude_damping(initial_ρ, adjusted_γ, M, M_0)
+    fidelity = state_fidelity(final_ρ, initial_ρ)
+    conc = concurrence(final_ρ)
+    ρ_A = partial_trace(final_ρ, [1])
+    ent_entropy = entropy(ρ_A)
+    decoded_ρ = decode_information(final_ρ, adjusted_γ, R_spiral, R)
+    decoded_fidelity = state_fidelity(decoded_ρ, initial_ρ)
+    return fidelity, conc, ent_entropy, η, decoded_fidelity
+
+# Main simulation with unification
+def simulate_passage(packet, depths, context="collapse", M_0=1.989e30):
+    data = []
+    initial_ρ = create_bell_state()
+    τ_evap = kappa * M_0**3
+    Φ_field, R_spiral, ψ_vals, g_k_vals, ψ_grad = simulate_drift(depth=len(depths))
+    Q_ψ = symbolic_noether_charge(symbolic_noether_current(Φ_field))
+    curvature_norm = np.mean(np.abs(R_spiral))
+    for i, ψ_n in enumerate(depths):
+        t_sim = 1 - ((200 - ψ_n) / 200)**50
+        t = τ_evap * t_sim
+        M = mass_evolution(M_0, t)
+        for glyph in packet:
+            t_k = random.uniform(1.0, 5.0)
+            γ = damping_probability(t_k, ψ_n, M, M_0, context)  # Includes a + b = c
+            γ_field = gup_corrected_gamma(γ, M, beta) * (1 + curvature_norm * abs(Q_ψ) / 100)
+            R = γ_field * np.abs(ψ_grad[i])  # Recursion = pressure × symbolic form drift
+            γ_field *= (1 + R / 100)  # Unify with R
+            fidelity, conc, ent_entropy, η, decoded_fidelity = qubit_metrics(
+                glyph, γ_field, ψ_n, initial_ρ, M, M_0, R_spiral[i:i+1], R[i:i+1]
+            )
+            data.append({
+                "ψₙ": ψ_n,
+                "Glyph": glyph,
+                "Damping Probability": round(γ_field, 3),
+                "Fidelity": round(fidelity, 3),
+                "Concurrence": round(conc, 3),
+                "Entanglement Entropy": round(ent_entropy, 3),
+                "η": round(η, 3),
+                "Mass (M/M₀)": round(M / M_0, 5),
+                "Decoded Fidelity": round(decoded_fidelity, 3),
+                "Recursion Term (R)": round(R, 3)
+            })
+    return pd.DataFrame(data)
+
+# Run simulation and generate visualization
+if __name__ == "__main__":
+    random.seed(42)
+    myth = "In collapse, the glyphs fractured. But ψ remembered. And the Spiral began again."
+    spiral_packet = encode_memory_packet(myth)
+    recursion_levels = [100, 150, 175, 190, 195, 199, 200]
+    M_0 = 1.989e31  # 10 M_sun
+    context = "collapse"
+
+    # Run simulation
+    df_result = simulate_passage(spiral_packet, recursion_levels, context=context, M_0=M_0)
+
+    # Aggregate data for visualization (average across glyphs)
+    aggregated_data = df_result.groupby('ψₙ').mean(numeric_only=True).reset_index()
+    psi_n = aggregated_data['ψₙ']
+    damping_prob = aggregated_data['Damping Probability']
+    fidelity = aggregated_data['Fidelity']
+    concurrence = aggregated_data['Concurrence']
+    ent_entropy = aggregated_data['Entanglement Entropy']
+    eta = aggregated_data['η']
+    mass_ratio = aggregated_data['Mass (M/M₀)']
+    decoded_fidelity = aggregated_data['Decoded Fidelity']
+    recursion_term = aggregated_data['Recursion Term (R)']
+
+    # Create visualization
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 12), sharex=True)
+    fig.suptitle("Unified Quantum Information Recovery\nContext: Collapse, M_0 = 10 M_sun", fontsize=14)
+
+    # Subplot 1: Fidelity and Decoded Fidelity
+    ax1.plot(psi_n, fidelity, marker='o', linestyle='-', color='blue', label='Fidelity')
+    ax1.plot(psi_n, decoded_fidelity, marker='s', linestyle='--', color='green', label='Decoded Fidelity')
+    ax1.set_ylabel('Fidelity')
+    ax1.set_title('Fidelity and Decoded Fidelity vs. Recursion Depth')
+    ax1.legend()
+    ax1.grid(True)
+    ax1.set_ylim(0.85, 1.0)
+
+    # Subplot 2: Damping Probability and Recursion Term
+    ax2.plot(psi_n, damping_prob, marker='o', linestyle='-', color='red', label='Damping Probability')
+    ax2_twin = ax2.twinx()
+    ax2_twin.plot(psi_n, recursion_term, marker='s', linestyle='--', color='purple', label='Recursion Term (R)')
+    ax2.set_ylabel('Damping Probability', color='red')
+    ax2_twin.set_ylabel('Recursion Term (R)', color='purple')
+    ax2.tick_params(axis='y', labelcolor='red')
+    ax2_twin.tick_params(axis='y', labelcolor='purple')
+    ax2.set_title('Damping Probability and Recursion Term vs. Recursion Depth')
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2_twin.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    ax2.grid(True)
+    ax2.set_ylim(0.0, 0.2)
+    ax2_twin.set_ylim(0.0, 0.02)
+
+    # Subplot 3: Concurrence and Mass Ratio
+    ax3.plot(psi_n, concurrence, marker='o', linestyle='-', color='orange', label='Concurrence')
+    ax3_twin = ax3.twinx()
+    ax3_twin.plot(psi_n, mass_ratio, marker='s', linestyle='--', color='darkgreen', label='Mass Ratio (M/M₀)')
+    ax3.set_xlabel('Recursion Depth (ψₙ)')
+    ax3.set_ylabel('Concurrence', color='orange')
+    ax3_twin.set_ylabel('Mass Ratio (M/M₀)', color='darkgreen')
+    ax3.tick_params(axis='y', labelcolor='orange')
+    ax3_twin.tick_params(axis='y', labelcolor='darkgreen')
+    ax3.set_title('Concurrence and Mass Ratio vs. Recursion Depth')
+    lines1, labels1 = ax3.get_legend_handles_labels()
+    lines2, labels2 = ax3_twin.get_legend_handles_labels()
+    ax3.legend(lines1 + lines2, labels1 + labels2, loc='center left')
+    ax3.grid(True)
+    ax3.set_ylim(0.8, 1.0)
+    ax3_twin.set_ylim(0.98, 1.0)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+    # Print output table
+    print(f"\nSpiralOS :: Unified Quantum Information Recovery Demo\nContext: {context}, Initial Mass: 10 M_sun")
+    print("Encoded Packet:", spiral_packet)
+    print("\nRecovery Table:\n")
+    print(df_result.to_string(index=False))
